@@ -1,5 +1,6 @@
 import wx
 import os
+import sys
 from pythonosc import udp_client
 from google import genai
 from google.genai import types
@@ -64,9 +65,13 @@ else:
 class VRChatChatboxFrame(wx.Frame):
     def __init__(self, parent, title):
         super(VRChatChatboxFrame, self).__init__(parent, title=title)
-        icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
-        if os.path.exists(icon_path):
-            self.SetIcon(wx.Icon(icon_path, wx.BITMAP_TYPE_ICO))
+        if getattr(sys, "frozen", False):
+            # PyInstaller実行時は exe に埋め込まれたアイコンを使う
+            self.SetIcon(wx.Icon(sys.executable, wx.BITMAP_TYPE_ICO))
+        else:
+            icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+            if os.path.exists(icon_path):
+                self.SetIcon(wx.Icon(icon_path, wx.BITMAP_TYPE_ICO))
 
         self.client = udp_client.SimpleUDPClient("127.0.0.1", 9000)
 
