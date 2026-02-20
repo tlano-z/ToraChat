@@ -1,10 +1,12 @@
 # ToraChat
-VRChatのChatboxへテキストを送信するデスクトップツールです。
+<img width="353" height="461" alt="image" src="https://github.com/user-attachments/assets/b189739b-a55e-4bd5-8455-8d65d289d10d" /> <br>
 
+VRChatのChatboxへテキストをOSC送信するデスクトップツールです。<br>
 主に無言勢の日本語チャットを目的として作成しています。<br>
 バーチャルデスクトップからSteamVRを起動し、XSOverlayでオーバーレイ表示して使うことを想定しています。
 
-VRゴーグルしたままじゃキーボードの位置わかんないよ！という私のために、カメラアプリもあります。（別リポジトリを準備中）
+VRゴーグルしたままじゃキーボードの位置わかんないよ！という私のために、カメラアプリもあります。<br>
+（別リポジトリを準備中）
 
 ## かんたんなつかいかた
 1. ToraChat.exeをダウンロード<br>
