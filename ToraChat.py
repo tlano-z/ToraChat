@@ -11,7 +11,7 @@ import csv
 # APIキーを保持するファイル名
 API_KEY_FILE = "api_key.txt"
 FIXED_PHRASES_FILE = "preset_messages.csv"
-MODEL = 'gemini-2.5-flash'
+MODEL = 'gemini-3.1-flash-lite-preview'
 
 # OSC で送るパラメータ名（VRChat側の ExpressionParameters と合わせる）
 OSC_TALKING_ADDRESS = "/avatar/parameters/ToraChat_OSC_Talking"
