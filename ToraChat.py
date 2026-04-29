@@ -7,11 +7,14 @@ from google.genai import types
 import json
 import random
 import csv
+import threading
+import queue
 
 # APIキーを保持するファイル名
 API_KEY_FILE = "api_key.txt"
 FIXED_PHRASES_FILE = "preset_messages.csv"
-MODEL = 'gemini-3.1-flash-lite-preview'
+MODELS_FILE = "models.json"
+TRANSLATION_TIMEOUT_SEC = 20.0
 
 # OSC で送るパラメータ名（VRChat側の ExpressionParameters と合わせる）
 OSC_TALKING_ADDRESS = "/avatar/parameters/ToraChat_OSC_Talking"
@@ -50,8 +53,48 @@ def load_api_key():
         return None
 
 
+def load_models():
+    """モデル定義をJSONから読み込む。失敗時は既定値を返す。"""
+    default_models = [
+        {"label": "Gemma 4 26B", "model": "gemma-4-26b-a4b-it"},
+    ]
+    default_model_name = default_models[0]["model"]
+
+    try:
+        with open(MODELS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"モデル定義ファイルが見つかりません: {MODELS_FILE}")
+        return default_models, default_model_name
+    except Exception as e:
+        print(f"モデル定義ファイルの読み込みに失敗しました: {e}")
+        return default_models, default_model_name
+
+    models = data.get("models", [])
+    valid_models = []
+    for item in models:
+        label = str(item.get("label", "")).strip()
+        model_name = str(item.get("model", "")).strip()
+        if label and model_name:
+            valid_models.append({"label": label, "model": model_name})
+
+    if not valid_models:
+        print("モデル定義が空または不正です。既定値を使用します。")
+        return default_models, default_model_name
+
+    configured_default = str(data.get("default_model", "")).strip()
+    available_model_names = {m["model"] for m in valid_models}
+    selected_default = (
+        configured_default
+        if configured_default in available_model_names
+        else valid_models[0]["model"]
+    )
+    return valid_models, selected_default
+
+
 client = None
 api_key = load_api_key()
+MODEL_CHOICES, DEFAULT_MODEL = load_models()
 if api_key:
     try:
         # Gemini API のキーを設定
@@ -74,6 +117,14 @@ class VRChatChatboxFrame(wx.Frame):
                 self.SetIcon(wx.Icon(icon_path, wx.BITMAP_TYPE_ICO))
 
         self.client = udp_client.SimpleUDPClient("127.0.0.1", 9000)
+        self.models = MODEL_CHOICES
+        self.model_label_to_name = {m["label"]: m["model"] for m in self.models}
+        self.translation_queue = queue.Queue()
+        self.translation_worker = threading.Thread(
+            target=self.translation_worker_loop,
+            daemon=True
+        )
+        self.translation_worker.start()
 
         # OSC_Talking の終了用タイマー
         self.osc_talk_timer = None
@@ -84,7 +135,9 @@ class VRChatChatboxFrame(wx.Frame):
         self.Bind(wx.EVT_TIMER, self.on_typing_timer, self.typing_timer)
 
         panel = wx.Panel(self)
+        self.panel = panel
         main_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.main_sizer = main_sizer
         self.fixed_phrases = self.load_fixed_phrases()
 
         # テキスト入力欄
@@ -118,6 +171,8 @@ class VRChatChatboxFrame(wx.Frame):
         self.custom_lang_input = wx.TextCtrl(panel)
         self.custom_lang_input.Enable(False)
         self.custom_checkbox.Bind(wx.EVT_CHECKBOX, self.on_custom_checkbox)
+        self.english_checkbox.Bind(wx.EVT_CHECKBOX, self.on_translation_option_changed)
+        self.chinese_checkbox.Bind(wx.EVT_CHECKBOX, self.on_translation_option_changed)
 
         option_row.Add(self.english_checkbox,
                        flag=wx.LEFT | wx.ALIGN_CENTER_VERTICAL, border=10)
@@ -129,11 +184,35 @@ class VRChatChatboxFrame(wx.Frame):
                        flag=wx.LEFT | wx.EXPAND, border=10)
 
         main_sizer.Add(option_row, flag=wx.EXPAND | wx.ALL, border=10)
+
+        model_row = wx.BoxSizer(wx.HORIZONTAL)
+        model_row.Add(wx.StaticText(panel, label="翻訳モデル:"),
+                      flag=wx.ALIGN_CENTER_VERTICAL)
+        model_labels = [m["label"] for m in self.models]
+        self.model_choice = wx.Choice(panel, choices=model_labels)
+        default_index = 0
+        for i, model_info in enumerate(self.models):
+            if model_info["model"] == DEFAULT_MODEL:
+                default_index = i
+                break
+        self.model_choice.SetSelection(default_index)
+        model_row.Add(self.model_choice, proportion=1,
+                      flag=wx.LEFT | wx.EXPAND, border=10)
+        self.model_row = model_row
+        main_sizer.Add(
+            model_row,
+            flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM,
+            border=10
+        )
+
         if client is None:
             self.english_checkbox.Enable(False)
             self.chinese_checkbox.Enable(False)
             self.custom_checkbox.Enable(False)
             self.custom_lang_input.Enable(False)
+            self.model_choice.Enable(False)
+
+        self.update_model_row_visibility()
 
         # OSC_Talkingパラメータ有効化チェックボックス
         osc_row = wx.BoxSizer(wx.HORIZONTAL)
@@ -201,6 +280,22 @@ class VRChatChatboxFrame(wx.Frame):
     def on_custom_checkbox(self, event):
         is_checked = event.IsChecked()
         self.custom_lang_input.Enable(is_checked)
+        self.update_model_row_visibility()
+
+    def on_translation_option_changed(self, event):
+        self.update_model_row_visibility()
+        event.Skip()
+
+    def update_model_row_visibility(self):
+        has_translation_target = (
+            self.english_checkbox.IsChecked()
+            or self.chinese_checkbox.IsChecked()
+            or self.custom_checkbox.IsChecked()
+        )
+        self.main_sizer.Show(self.model_row, has_translation_target, recursive=True)
+        self.panel.Layout()
+        self.main_sizer.Fit(self.panel)
+        self.SendSizeEvent()
 
     def on_send_button(self, event):
         self.send_text()
@@ -314,14 +409,6 @@ class VRChatChatboxFrame(wx.Frame):
                 print("カスタム言語が入力されていません。")
                 return
 
-        if apply_translation and target_languages and client is not None:
-            translated_text = self.translate_text(text, target_languages)
-            self.client.send_message("/chatbox/input", [translated_text, True, True])
-            print(f"Sent: {translated_text}")
-        else:
-            self.client.send_message("/chatbox/input", [text, True, True])
-            print(f"Sent: {text}")
-
         # 通常送信（入力欄をクリアする場合）のみ typing を解除する
         if clear_input and self.is_typing:
             self.is_typing = False
@@ -330,12 +417,22 @@ class VRChatChatboxFrame(wx.Frame):
             if self.typing_timer.IsRunning():
                 self.typing_timer.Stop()
 
-        # OSC_Talkingパラメータ送信
-        if self.osc_talk_checkbox.IsChecked():
-            self.start_npc_talk_osc(text)
-
         if clear_input:
             self.text_input.Clear()
+
+        use_osc_talk = self.osc_talk_checkbox.IsChecked()
+        if apply_translation and target_languages and client is not None:
+            selected_model = self.get_selected_model_name()
+            task = {
+                "text": text,
+                "target_languages": target_languages,
+                "model_name": selected_model,
+                "use_osc_talk": use_osc_talk,
+            }
+            self.translation_queue.put(task)
+            print(f"翻訳キュー投入: model={selected_model}, targets={target_languages}")
+        else:
+            self.send_chatbox_message(text, text, use_osc_talk)
 
     def load_fixed_phrases(self):
         phrases = []
@@ -363,7 +460,59 @@ class VRChatChatboxFrame(wx.Frame):
 
     # ---------------- Gemini翻訳 ----------------
 
-    def translate_text(self, text, target_languages):
+    def get_selected_model_name(self):
+        selection = self.model_choice.GetSelection()
+        if selection == wx.NOT_FOUND:
+            return DEFAULT_MODEL
+        selected_label = self.model_choice.GetString(selection)
+        return self.model_label_to_name.get(selected_label, DEFAULT_MODEL)
+
+    def send_chatbox_message(self, message_text, original_text, use_osc_talk):
+        self.client.send_message("/chatbox/input", [message_text, True, True])
+        print(f"Sent: {message_text}")
+        if use_osc_talk:
+            self.start_npc_talk_osc(original_text)
+
+    def translation_worker_loop(self):
+        while True:
+            task = self.translation_queue.get()
+            text = task["text"]
+            target_languages = task["target_languages"]
+            model_name = task["model_name"]
+            use_osc_talk = task["use_osc_talk"]
+
+            translated_text = self.translate_text_with_timeout(
+                text,
+                target_languages,
+                model_name,
+                TRANSLATION_TIMEOUT_SEC
+            )
+            wx.CallAfter(
+                self.send_chatbox_message,
+                translated_text,
+                text,
+                use_osc_talk
+            )
+            self.translation_queue.task_done()
+
+    def translate_text_with_timeout(self, text, target_languages, model_name, timeout_sec):
+        result_holder = {"done": False, "value": text}
+
+        def worker():
+            try:
+                result_holder["value"] = self.translate_text(text, target_languages, model_name)
+            finally:
+                result_holder["done"] = True
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout_sec)
+        if not result_holder["done"]:
+            print(f"翻訳タイムアウト({timeout_sec}秒): 原文を送信します。")
+            return text
+        return result_holder["value"]
+
+    def translate_text(self, text, target_languages, model_name):
         if client is None:
             return text
 
@@ -386,7 +535,7 @@ class VRChatChatboxFrame(wx.Frame):
 
         try:
             response = client.models.generate_content(
-                model=MODEL,
+                model=model_name,
                 contents=prompt,
                 config=generation_config
             )
@@ -395,7 +544,8 @@ class VRChatChatboxFrame(wx.Frame):
             return text
 
         try:
-            json_data = json.loads(response.text)
+            response_text = response.text or ""
+            json_data = json.loads(response_text)
         except json.JSONDecodeError:
             print(f"Error: Could not decode JSON response.\nRaw response: {response.text}")
             return text

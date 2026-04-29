@@ -1,0 +1,17 @@
+{
+  "default_model": "gemma-4-26b-a4b-it",
+  "models": [
+    {
+      "label": "Gemma 4 26B",
+      "model": "gemma-4-26b-a4b-it"
+    },
+    {
+      "label": "Gemma 4 31B",
+      "model": "gemma-4-31b-it"
+    },
+    {
+      "label": "Gemini 3.1 Flash Lite",
+      "model": "gemini-3.1-flash-lite-preview"
+    }
+  ]
+}
